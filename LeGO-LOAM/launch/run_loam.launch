@@ -1,0 +1,29 @@
+<launch>
+
+    <arg name="project" default="lego_loam"/>
+    <arg name="robot"   default="jackal0"/>
+    
+    <!--- TF -->
+    <node pkg="tf" type="static_transform_publisher" name="camera_init_to_map_$(arg robot)"  args="0 0 0 1.570795   0        1.570795 $(arg robot)/odom    $(arg robot)/camera_init 10" />
+    <node pkg="tf" type="static_transform_publisher" name="base_link_to_camera_$(arg robot)" args="0 0 0 -1.570795 -1.570795 0        $(arg robot)/camera  $(arg robot)/base_link   10" />
+
+    <!--- LeGO-LOAM -->    
+    <node pkg="lego_loam" type="imageProjection"    name="imageProjection"    ns="$(arg robot)"    output="screen">
+        <param name="/robot_id" type="string" value = "$(arg robot)"/>
+    </node>
+    <node pkg="lego_loam" type="featureAssociation" name="featureAssociation" ns="$(arg robot)"    output="screen">
+        <param name="/robot_id" type="string" value = "$(arg robot)"/>
+    </node>
+    <node pkg="lego_loam" type="mapOptmization"     name="mapOptmization"     ns="$(arg robot)"    output="screen">
+        <param name="/robot_id" type="string" value = "$(arg robot)"/>
+    </node>
+    <node pkg="lego_loam" type="transformFusion"    name="transformFusion"    ns="$(arg robot)"    output="screen">
+        <param name="/robot_id" type="string" value = "$(arg robot)"/>
+    </node>
+
+    <node pkg="$(arg project)" type="$(arg project)_mapFusion" name="$(arg project)_mapFusion_$(arg robot)"   ns="$(arg robot)"    output="screen">
+        <param name="/robot_id" type="string" value = "$(arg robot)"/>
+    </node>
+
+
+</launch>

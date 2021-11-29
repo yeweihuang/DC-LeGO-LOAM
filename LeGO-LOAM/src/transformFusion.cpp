@@ -36,6 +36,8 @@ class TransformFusion{
 
 private:
 
+    std::string robot_id;
+
     ros::NodeHandle nh;
 
     ros::Publisher pubLaserOdometry2;
@@ -65,21 +67,25 @@ public:
 
     TransformFusion(){
 
-        pubLaserOdometry2 = nh.advertise<nav_msgs::Odometry> ("/integrated_to_init", 5);
-        subLaserOdometry = nh.subscribe<nav_msgs::Odometry>("/laser_odom_to_init", 5, &TransformFusion::laserOdometryHandler, this);
-        subOdomAftMapped = nh.subscribe<nav_msgs::Odometry>("/aft_mapped_to_init", 5, &TransformFusion::odomAftMappedHandler, this);
+        ros::NodeHandle n("~");
+        n.param<std::string>("robot_id", robot_id, "jackal1");
 
-        laserOdometry2.header.frame_id = "/camera_init";
-        laserOdometry2.child_frame_id = "/camera";
 
-        laserOdometryTrans2.frame_id_ = "/camera_init";
-        laserOdometryTrans2.child_frame_id_ = "/camera";
+        pubLaserOdometry2 = nh.advertise<nav_msgs::Odometry> ("integrated_to_init", 5);
+        subLaserOdometry = nh.subscribe<nav_msgs::Odometry>("laser_odom_to_init", 5, &TransformFusion::laserOdometryHandler, this);
+        subOdomAftMapped = nh.subscribe<nav_msgs::Odometry>("aft_mapped_to_init", 5, &TransformFusion::odomAftMappedHandler, this);
 
-        map_2_camera_init_Trans.frame_id_ = "/map";
-        map_2_camera_init_Trans.child_frame_id_ = "/camera_init";
+        laserOdometry2.header.frame_id = robot_id + "/camera_init";
+        laserOdometry2.child_frame_id = robot_id + "/camera";
 
-        camera_2_base_link_Trans.frame_id_ = "/camera";
-        camera_2_base_link_Trans.child_frame_id_ = "/base_link";
+        laserOdometryTrans2.frame_id_ = robot_id + "/camera_init";
+        laserOdometryTrans2.child_frame_id_ = robot_id + "/camera";
+
+        map_2_camera_init_Trans.frame_id_ = robot_id + "/odom";
+        map_2_camera_init_Trans.child_frame_id_ = robot_id + "/camera_init";
+
+        camera_2_base_link_Trans.frame_id_ = robot_id + "/camera";
+        camera_2_base_link_Trans.child_frame_id_ = robot_id + "/base_link";
 
         for (int i = 0; i < 6; ++i)
         {

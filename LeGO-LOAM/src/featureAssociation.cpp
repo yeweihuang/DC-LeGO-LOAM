@@ -38,12 +38,20 @@ class FeatureAssociation{
 
 private:
 
-	ros::NodeHandle nh;
+    std::string robot_id;
+
+    ros::NodeHandle nh;
 
     ros::Subscriber subLaserCloud;
     ros::Subscriber subLaserCloudInfo;
     ros::Subscriber subOutlierCloud;
     ros::Subscriber subImu;
+
+    //for fusion
+    ros::Subscriber subFullCloud;
+    ros::Publisher pubFullCloud;
+    pcl::PointCloud<PointType>::Ptr fullCloud;
+    bool newFullCloud;
 
     ros::Publisher pubCornerPointsSharp;
     ros::Publisher pubCornerPointsLessSharp;
@@ -183,24 +191,31 @@ private:
 
 public:
 
-    FeatureAssociation():
-        nh("~")
-        {
+    FeatureAssociation()//:
+//        nh("~")
+    {
 
-        subLaserCloud = nh.subscribe<sensor_msgs::PointCloud2>("/segmented_cloud", 1, &FeatureAssociation::laserCloudHandler, this);
-        subLaserCloudInfo = nh.subscribe<cloud_msgs::cloud_info>("/segmented_cloud_info", 1, &FeatureAssociation::laserCloudInfoHandler, this);
-        subOutlierCloud = nh.subscribe<sensor_msgs::PointCloud2>("/outlier_cloud", 1, &FeatureAssociation::outlierCloudHandler, this);
+        ros::NodeHandle n("~");
+        n.param<std::string>("robot_id", robot_id, "jackal1");
+
+        //for fusion
+        subFullCloud = nh.subscribe<sensor_msgs::PointCloud2>("full_cloud_projected", 1, &FeatureAssociation::fullCloudHandler, this);
+        pubFullCloud = nh.advertise<sensor_msgs::PointCloud2>("feature/full_cloud", 2);
+
+        subLaserCloud = nh.subscribe<sensor_msgs::PointCloud2>("segmented_cloud", 1, &FeatureAssociation::laserCloudHandler, this);
+        subLaserCloudInfo = nh.subscribe<cloud_msgs::cloud_info>("segmented_cloud_info", 1, &FeatureAssociation::laserCloudInfoHandler, this);
+        subOutlierCloud = nh.subscribe<sensor_msgs::PointCloud2>("outlier_cloud", 1, &FeatureAssociation::outlierCloudHandler, this);
         subImu = nh.subscribe<sensor_msgs::Imu>(imuTopic, 50, &FeatureAssociation::imuHandler, this);
 
-        pubCornerPointsSharp = nh.advertise<sensor_msgs::PointCloud2>("/laser_cloud_sharp", 1);
-        pubCornerPointsLessSharp = nh.advertise<sensor_msgs::PointCloud2>("/laser_cloud_less_sharp", 1);
-        pubSurfPointsFlat = nh.advertise<sensor_msgs::PointCloud2>("/laser_cloud_flat", 1);
-        pubSurfPointsLessFlat = nh.advertise<sensor_msgs::PointCloud2>("/laser_cloud_less_flat", 1);
+        pubCornerPointsSharp = nh.advertise<sensor_msgs::PointCloud2>("laser_cloud_sharp", 1);
+        pubCornerPointsLessSharp = nh.advertise<sensor_msgs::PointCloud2>("laser_cloud_less_sharp", 1);
+        pubSurfPointsFlat = nh.advertise<sensor_msgs::PointCloud2>("laser_cloud_flat", 1);
+        pubSurfPointsLessFlat = nh.advertise<sensor_msgs::PointCloud2>("laser_cloud_less_flat", 1);
 
-        pubLaserCloudCornerLast = nh.advertise<sensor_msgs::PointCloud2>("/laser_cloud_corner_last", 2);
-        pubLaserCloudSurfLast = nh.advertise<sensor_msgs::PointCloud2>("/laser_cloud_surf_last", 2);
-        pubOutlierCloudLast = nh.advertise<sensor_msgs::PointCloud2>("/outlier_cloud_last", 2);
-        pubLaserOdometry = nh.advertise<nav_msgs::Odometry> ("/laser_odom_to_init", 5);
+        pubLaserCloudCornerLast = nh.advertise<sensor_msgs::PointCloud2>("laser_cloud_corner_last", 2);
+        pubLaserCloudSurfLast = nh.advertise<sensor_msgs::PointCloud2>("laser_cloud_surf_last", 2);
+        pubOutlierCloudLast = nh.advertise<sensor_msgs::PointCloud2>("outlier_cloud_last", 2);
+        pubLaserOdometry = nh.advertise<nav_msgs::Odometry> ("laser_odom_to_init", 5);
         
         initializationValue();
     }
@@ -223,6 +238,10 @@ public:
         cloudSmoothness.resize(N_SCAN*Horizon_SCAN);
 
         downSizeFilter.setLeafSize(0.2, 0.2, 0.2);
+
+        //for fusion
+        fullCloud.reset(new pcl::PointCloud<PointType>());
+        newFullCloud = false;
 
         segmentedCloud.reset(new pcl::PointCloud<PointType>());
         outlierCloud.reset(new pcl::PointCloud<PointType>());
@@ -302,11 +321,11 @@ public:
         kdtreeCornerLast.reset(new pcl::KdTreeFLANN<PointType>());
         kdtreeSurfLast.reset(new pcl::KdTreeFLANN<PointType>());
 
-        laserOdometry.header.frame_id = "/camera_init";
-        laserOdometry.child_frame_id = "/laser_odom";
+        laserOdometry.header.frame_id = robot_id + "/camera_init";
+        laserOdometry.child_frame_id = robot_id + "/laser_odom";
 
-        laserOdometryTrans.frame_id_ = "/camera_init";
-        laserOdometryTrans.child_frame_id_ = "/laser_odom";
+        laserOdometryTrans.frame_id_ = robot_id + "/camera_init";
+        laserOdometryTrans.child_frame_id_ = robot_id + "/laser_odom";
         
         isDegenerate = false;
         matP = cv::Mat(6, 6, CV_32F, cv::Scalar::all(0));
@@ -456,6 +475,12 @@ public:
         imuAngularVeloZ[imuPointerLast] = imuIn->angular_velocity.z;
 
         AccumulateIMUShiftAndRotation();
+    }
+
+    void fullCloudHandler(const sensor_msgs::PointCloud2ConstPtr& laserCloudMsg){
+        fullCloud->clear();
+        pcl::fromROSMsg(*laserCloudMsg, *fullCloud);
+        newFullCloud = true;
     }
 
     void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr& laserCloudMsg){
@@ -790,28 +815,28 @@ public:
 	    if (pubCornerPointsSharp.getNumSubscribers() != 0){
 	        pcl::toROSMsg(*cornerPointsSharp, laserCloudOutMsg);
 	        laserCloudOutMsg.header.stamp = cloudHeader.stamp;
-	        laserCloudOutMsg.header.frame_id = "/camera";
+	        laserCloudOutMsg.header.frame_id = robot_id + "/camera";
 	        pubCornerPointsSharp.publish(laserCloudOutMsg);
 	    }
 
 	    if (pubCornerPointsLessSharp.getNumSubscribers() != 0){
 	        pcl::toROSMsg(*cornerPointsLessSharp, laserCloudOutMsg);
 	        laserCloudOutMsg.header.stamp = cloudHeader.stamp;
-	        laserCloudOutMsg.header.frame_id = "/camera";
+	        laserCloudOutMsg.header.frame_id = robot_id + "/camera";
 	        pubCornerPointsLessSharp.publish(laserCloudOutMsg);
 	    }
 
 	    if (pubSurfPointsFlat.getNumSubscribers() != 0){
 	        pcl::toROSMsg(*surfPointsFlat, laserCloudOutMsg);
 	        laserCloudOutMsg.header.stamp = cloudHeader.stamp;
-	        laserCloudOutMsg.header.frame_id = "/camera";
+	        laserCloudOutMsg.header.frame_id = robot_id + "/camera";
 	        pubSurfPointsFlat.publish(laserCloudOutMsg);
 	    }
 
 	    if (pubSurfPointsLessFlat.getNumSubscribers() != 0){
 	        pcl::toROSMsg(*surfPointsLessFlat, laserCloudOutMsg);
 	        laserCloudOutMsg.header.stamp = cloudHeader.stamp;
-	        laserCloudOutMsg.header.frame_id = "/camera";
+	        laserCloudOutMsg.header.frame_id = robot_id + "/camera";
 	        pubSurfPointsLessFlat.publish(laserCloudOutMsg);
 	    }
     }
@@ -1621,14 +1646,21 @@ public:
         sensor_msgs::PointCloud2 laserCloudCornerLast2;
         pcl::toROSMsg(*laserCloudCornerLast, laserCloudCornerLast2);
         laserCloudCornerLast2.header.stamp = cloudHeader.stamp;
-        laserCloudCornerLast2.header.frame_id = "/camera";
+        laserCloudCornerLast2.header.frame_id = robot_id + "/camera";
         pubLaserCloudCornerLast.publish(laserCloudCornerLast2);
 
         sensor_msgs::PointCloud2 laserCloudSurfLast2;
         pcl::toROSMsg(*laserCloudSurfLast, laserCloudSurfLast2);
         laserCloudSurfLast2.header.stamp = cloudHeader.stamp;
-        laserCloudSurfLast2.header.frame_id = "/camera";
+        laserCloudSurfLast2.header.frame_id = robot_id + "/camera";
         pubLaserCloudSurfLast.publish(laserCloudSurfLast2);
+
+        sensor_msgs::PointCloud2 fullCloud2;
+       pcl::toROSMsg(*fullCloud, fullCloud2);
+        // pcl::toROSMsg(*segmentedCloud, fullCloud2);
+        laserCloudCornerLast2.header.stamp = cloudHeader.stamp;
+        laserCloudCornerLast2.header.frame_id = robot_id + "/base_link";
+        pubFullCloud.publish(fullCloud2);
 
         transformSum[0] += imuPitchStart;
         transformSum[2] += imuRollStart;
@@ -1797,33 +1829,40 @@ public:
             sensor_msgs::PointCloud2 outlierCloudLast2;
             pcl::toROSMsg(*outlierCloud, outlierCloudLast2);
             outlierCloudLast2.header.stamp = cloudHeader.stamp;
-            outlierCloudLast2.header.frame_id = "/camera";
+            outlierCloudLast2.header.frame_id = robot_id + "/camera";
             pubOutlierCloudLast.publish(outlierCloudLast2);
 
             sensor_msgs::PointCloud2 laserCloudCornerLast2;
             pcl::toROSMsg(*laserCloudCornerLast, laserCloudCornerLast2);
             laserCloudCornerLast2.header.stamp = cloudHeader.stamp;
-            laserCloudCornerLast2.header.frame_id = "/camera";
+            laserCloudCornerLast2.header.frame_id = robot_id + "/camera";
             pubLaserCloudCornerLast.publish(laserCloudCornerLast2);
 
             sensor_msgs::PointCloud2 laserCloudSurfLast2;
             pcl::toROSMsg(*laserCloudSurfLast, laserCloudSurfLast2);
             laserCloudSurfLast2.header.stamp = cloudHeader.stamp;
-            laserCloudSurfLast2.header.frame_id = "/camera";
+            laserCloudSurfLast2.header.frame_id = robot_id + "/camera";
             pubLaserCloudSurfLast.publish(laserCloudSurfLast2);
+
+            sensor_msgs::PointCloud2 fullCloud2;
+            pcl::toROSMsg(*fullCloud, fullCloud2);
+            laserCloudCornerLast2.header.stamp = cloudHeader.stamp;
+            laserCloudCornerLast2.header.frame_id = robot_id + "/base_link";
+            pubFullCloud.publish(fullCloud2);
         }
     }
 
     void runFeatureAssociation()
     {
 
-        if (newSegmentedCloud && newSegmentedCloudInfo && newOutlierCloud &&
+        if (newSegmentedCloud && newSegmentedCloudInfo && newOutlierCloud && newFullCloud &&
             std::abs(timeNewSegmentedCloudInfo - timeNewSegmentedCloud) < 0.05 &&
             std::abs(timeNewOutlierCloud - timeNewSegmentedCloud) < 0.05){
 
             newSegmentedCloud = false;
             newSegmentedCloudInfo = false;
             newOutlierCloud = false;
+            newFullCloud = false;
         }else{
             return;
         }

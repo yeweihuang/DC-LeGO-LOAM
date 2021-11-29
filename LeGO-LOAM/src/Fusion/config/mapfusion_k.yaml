@@ -1,0 +1,21 @@
+mapfusion:
+    scancontext:
+        knn_feature_dim: 64
+        max_range: 30
+        num_sector: 60
+        num_nearest_matches: 50
+        num_match_candidates: 1
+
+    interRobot:
+        sc_topic: "context"
+        sc_frame: "base_link"
+        local_topic: "lio_sam/mapping/cloud_info"
+        loop_threshold: 0.4      # 0.2
+        pcm_threshold: 25        # 25 PCM threshold for obtain or discard
+        icp_threshold: 1.0         # ICP pointcloud matching threshold
+        robot_initial: jackal0
+        loop_frame_threshold: 10 # minimum frame distance for inter-robot loop
+        pcm_matrix_folder: "/home/yewei/catkin_ws/src/LeGO-LOAM/LeGO-LOAM/config"
+        pcm_start_threshold: 5   # 5 for best result, 2 for work in harsh environment
+
+#        history_keyframe_search_num: 25             # 2n-1 number of history key frames will be fused into a submap for global loop closure

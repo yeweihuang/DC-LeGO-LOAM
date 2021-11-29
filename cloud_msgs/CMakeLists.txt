@@ -7,6 +7,7 @@ find_package(catkin REQUIRED COMPONENTS
   geometry_msgs
   std_msgs
   nav_msgs
+  sensor_msgs
 )
 
 add_message_files(
@@ -20,6 +21,7 @@ generate_messages(
   geometry_msgs
   std_msgs
   nav_msgs
+  sensor_msgs
 )
 
 
@@ -30,6 +32,7 @@ catkin_package(
   geometry_msgs 
   std_msgs
   nav_msgs
+  sensor_msgs
 )
 
 include_directories(
