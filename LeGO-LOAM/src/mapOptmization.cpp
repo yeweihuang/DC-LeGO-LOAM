@@ -1538,8 +1538,8 @@ public:
 
             MHEdgeStruct edge_ele;
             edge_ele.EdgeType = 1;
-            edge_ele.IDFrom = si;
-            edge_ele.IDTo.push_back(sj);
+            edge_ele.IDFrom = sj;
+            edge_ele.IDTo.push_back(si);
             edge_ele.IsAmbiguity = 0;
             edge_ele.Pose.push_back(poseFrom.between(poseTo));
             edge_ele.NoiseMat = noiseMatrix;
