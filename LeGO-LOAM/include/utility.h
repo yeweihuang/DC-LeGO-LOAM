@@ -50,11 +50,8 @@ using namespace std;
 
 typedef pcl::PointXYZI  PointType;
 
-  extern const string pointCloudTopic = "velodyne_points";
-// extern const string imuTopic = "imu/data";
-
-// extern const string pointCloudTopic = "points_raw";
-extern const string imuTopic = "imu/correct";
+extern const string pointCloudTopic = "/velodyne_points";
+extern const string imuTopic = "/imu/data";
 
 // Save pcd
 extern const string fileDirectory = "/tmp/";
@@ -62,22 +59,13 @@ extern const string fileDirectory = "/tmp/";
 // Using velodyne cloud "ring" channel for image projection (other lidar may have different name for this channel, change "PointXYZIR" below)
 extern const bool useCloudRing = true; // if true, ang_res_y and ang_bottom are not used
 
-
-// VLP-64
-// extern const int N_SCAN = 64;
-// extern const int Horizon_SCAN = 1800;
-// extern const float ang_res_x = 0.2;
-// extern const float ang_res_y = 0.427;
-// extern const float ang_bottom = 24.9;
-// extern const int groundScanInd = 50;
-
 // VLP-16
-  extern const int N_SCAN = 16;
-  extern const int Horizon_SCAN = 1800;
-  extern const float ang_res_x = 0.2;
-  extern const float ang_res_y = 2.0;
-  extern const float ang_bottom = 15.0+0.1;
-  extern const int groundScanInd = 7;
+extern const int N_SCAN = 16;
+extern const int Horizon_SCAN = 1800;
+extern const float ang_res_x = 0.2;
+extern const float ang_res_y = 2.0;
+extern const float ang_bottom = 15.0+0.1;
+extern const int groundScanInd = 7;
 
 // HDL-32E
 // extern const int N_SCAN = 32;
@@ -138,14 +126,14 @@ extern const float nearestFeatureSearchSqDist = 25;
 
 
 // Mapping Params
-extern const float surroundingKeyframeSearchRadius = 250.0; // key frame that is within n meters from current pose will be considerd for scan-to-map optimization (when loop closure disabled)
+extern const float surroundingKeyframeSearchRadius = 50.0; // key frame that is within n meters from current pose will be considerd for scan-to-map optimization (when loop closure disabled)
 extern const int   surroundingKeyframeSearchNum = 50; // submap size (when loop closure enabled)
 // history key frames (history submap for loop closure)
-extern const float historyKeyframeSearchRadius = 30.0; // key frame that is within n meters from current pose will be considerd for loop closure
-extern const int   historyKeyframeSearchNum = 30; // 2n+1 number of hostory key frames will be fused into a submap for loop closure
-extern const float historyKeyframeFitnessScore = 1.5; // the smaller the better alignment
+extern const float historyKeyframeSearchRadius = 7.0; // key frame that is within n meters from current pose will be considerd for loop closure
+extern const int   historyKeyframeSearchNum = 25; // 2n+1 number of hostory key frames will be fused into a submap for loop closure
+extern const float historyKeyframeFitnessScore = 0.3; // the smaller the better alignment
 
-extern const float globalMapVisualizationSearchRadius = 500.0; // key frames with in n meters will be visualized
+extern const float globalMapVisualizationSearchRadius = 100.0; // key frames with in n meters will be visualized
 
 
 struct smoothness_t{ 

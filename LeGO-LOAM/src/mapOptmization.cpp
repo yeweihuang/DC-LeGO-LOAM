@@ -32,53 +32,46 @@
 //   T. Shan and B. Englot. LeGO-LOAM: Lightweight and Ground-Optimized Lidar Odometry and Mapping on Variable Terrain
 //      IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS). October 2018.
 #include "utility.h"
-#include "lio_sam/cloud_info.h"
-#include "lio_sam/context_info.h"
-
-#include "Fusion/writeMHg2o.cpp"
 
 #include <gtsam/geometry/Rot3.h>
 #include <gtsam/geometry/Pose3.h>
 #include <gtsam/slam/PriorFactor.h>
 #include <gtsam/slam/BetweenFactor.h>
 #include <gtsam/nonlinear/NonlinearFactorGraph.h>
-#include <gtsam/nonlinear/LevenbergMarquardtOptimizer.h>
-#include <gtsam/nonlinear/Marginals.h>
 #include <gtsam/nonlinear/Values.h>
+#include <gtsam/inference/Symbol.h>
 
 #include <gtsam/nonlinear/ISAM2.h>
 
-#include <gtsam/slam/dataset.h>
-#include <gtsam/inference/Symbol.h>
-#include <gtsam/linear/NoiseModel.h>
+//dcsam
+#include "dcsam/DCContinuousFactor.h"
+#include "dcsam/DCMixtureFactor.h"
+#include "dcsam/DCSAM.h"
+#include "dcsam/DiscretePriorFactor.h"
 
+using namespace std;
 using namespace gtsam;
+using namespace dcsam;
+
+using symbol_shorthand::D; //discrete, for loop closures
 
 class mapOptimization{
 
 private:
 
-    //for global node
-    std::string robot_id;
-    ros::Subscriber subFullCloud;
-    ros::Publisher pubCloudInCloudPoseInfo;
-	ros::Subscriber subGlobalLoop;
-    ros::Publisher pubCloudPoseInfo;
-    lio_sam::cloud_info cloudPoseInfo;
-    pcl::PointCloud<PointType>::Ptr fullCloud;
+    // gtsam
+    HybridFactorGraph dcSAMgraph;
+    Values initialEstimateNonlinear;
+    DiscreteValues initialEstimateDiscrete;
+    DCSAM *dcsam;
+    DCValues dcsamCurrentEstimate;
+    Values odomCurrentEstimate;
 
-    //for MH-isam2
-    vector<MHEdgeStruct> edge_list;
-
-    //tmp
-//    Values initial_door;
-//    NonlinearFactorGraph graph_door;
-
-    NonlinearFactorGraph gtSAMgraph;
-    Values initialEstimate;
-    Values optimizedEstimate;
-    ISAM2 *isam;
-    Values isamCurrentEstimate;
+//    NonlinearFactorGraph gtSAMgraph;
+//    Values initialEstimate;
+//    Values optimizedEstimate;
+//    ISAM2 *isam;
+//    Values isamCurrentEstimate;
 
     noiseModel::Diagonal::shared_ptr priorNoise;
     noiseModel::Diagonal::shared_ptr odometryNoise;
@@ -100,7 +93,6 @@ private:
     ros::Subscriber subOutlierCloudLast;
     ros::Subscriber subLaserOdometry;
     ros::Subscriber subImu;
-
 
     nav_msgs::Odometry odomAftMapped;
     tf::StampedTransform aftMappedTrans;
@@ -135,8 +127,6 @@ private:
     pcl::PointCloud<PointType>::Ptr laserCloudSurfLast; // surf feature set from odoOptimization
     pcl::PointCloud<PointType>::Ptr laserCloudCornerLastDS; // downsampled corner featuer set from odoOptimization
     pcl::PointCloud<PointType>::Ptr laserCloudSurfLastDS; // downsampled surf featuer set from odoOptimization
-
-    pcl::PointCloud<PointType>::Ptr laserCloudLastFeature; //
 
     pcl::PointCloud<PointType>::Ptr laserCloudOutlierLast; // corner feature set from odoOptimization
     pcl::PointCloud<PointType>::Ptr laserCloudOutlierLastDS; // corner feature set from odoOptimization
@@ -184,7 +174,6 @@ private:
     pcl::VoxelGrid<PointType> downSizeFilterSurroundingKeyPoses; // for surrounding key poses of scan-to-map optimization
     pcl::VoxelGrid<PointType> downSizeFilterGlobalMapKeyPoses; // for global map visualization
     pcl::VoxelGrid<PointType> downSizeFilterGlobalMapKeyFrames; // for global map visualization
-    bool newFullCloud;
 
     double timeLaserCloudCornerLast;
     double timeLaserCloudSurfLast;
@@ -205,6 +194,7 @@ private:
     float transformBefMapped[6];
     float transformAftMapped[6];
 
+    int loop_count = 0;
 
     int imuPointerFront;
     int imuPointerLast;
@@ -251,55 +241,45 @@ public:
 
     
 
-    mapOptimization()//:
-//        nh("~")
+    mapOptimization():
+        nh("~")
     {
+        dcsam = new DCSAM();
+//    	ISAM2Params parameters;
+//		parameters.relinearizeThreshold = 0.01;
+//		parameters.relinearizeSkip = 1;
+//    	isam = new ISAM2(parameters);
 
-        ros::NodeHandle n("~");
-        n.param<std::string>("robot_id", robot_id, "jackal1");
+        pubKeyPoses = nh.advertise<sensor_msgs::PointCloud2>("/key_pose_origin", 2);
+        pubLaserCloudSurround = nh.advertise<sensor_msgs::PointCloud2>("/laser_cloud_surround", 2);
+        pubOdomAftMapped = nh.advertise<nav_msgs::Odometry> ("/aft_mapped_to_init", 5);
 
-    	ISAM2Params parameters;
-		parameters.relinearizeThreshold = 0.01;
-		parameters.relinearizeSkip = 1;
-    	isam = new ISAM2(parameters);
-
-        pubKeyPoses = nh.advertise<sensor_msgs::PointCloud2>("key_pose_origin", 2);
-        pubLaserCloudSurround = nh.advertise<sensor_msgs::PointCloud2>("laser_cloud_surround", 2);
-        pubOdomAftMapped = nh.advertise<nav_msgs::Odometry> ("aft_mapped_to_init", 5);
-
-        subLaserCloudCornerLast = nh.subscribe<sensor_msgs::PointCloud2>("laser_cloud_corner_last", 2, &mapOptimization::laserCloudCornerLastHandler, this);
-        subLaserCloudSurfLast = nh.subscribe<sensor_msgs::PointCloud2>("laser_cloud_surf_last", 2, &mapOptimization::laserCloudSurfLastHandler, this);
-        subOutlierCloudLast = nh.subscribe<sensor_msgs::PointCloud2>("outlier_cloud_last", 2, &mapOptimization::laserCloudOutlierLastHandler, this);
-        subLaserOdometry = nh.subscribe<nav_msgs::Odometry>("laser_odom_to_init", 5, &mapOptimization::laserOdometryHandler, this);
+        subLaserCloudCornerLast = nh.subscribe<sensor_msgs::PointCloud2>("/laser_cloud_corner_last", 2, &mapOptimization::laserCloudCornerLastHandler, this);
+        subLaserCloudSurfLast = nh.subscribe<sensor_msgs::PointCloud2>("/laser_cloud_surf_last", 2, &mapOptimization::laserCloudSurfLastHandler, this);
+        subOutlierCloudLast = nh.subscribe<sensor_msgs::PointCloud2>("/outlier_cloud_last", 2, &mapOptimization::laserCloudOutlierLastHandler, this);
+        subLaserOdometry = nh.subscribe<nav_msgs::Odometry>("/laser_odom_to_init", 5, &mapOptimization::laserOdometryHandler, this);
         subImu = nh.subscribe<sensor_msgs::Imu> (imuTopic, 50, &mapOptimization::imuHandler, this);
 
-        pubHistoryKeyFrames = nh.advertise<sensor_msgs::PointCloud2>("history_cloud", 2);
-        pubIcpKeyFrames = nh.advertise<sensor_msgs::PointCloud2>("corrected_cloud", 2);
-        pubRecentKeyFrames = nh.advertise<sensor_msgs::PointCloud2>("recent_cloud", 2);
-        pubRegisteredCloud = nh.advertise<sensor_msgs::PointCloud2>("registered_cloud", 2);
-
-        //global
-        pubCloudPoseInfo = nh.advertise<lio_sam::cloud_info>("lio_sam/mapping/cloud_info", 2);
-        pubCloudInCloudPoseInfo = nh.advertise<sensor_msgs::PointCloud2>("cloud_in_cloud_pose_info",1);
-		subGlobalLoop = nh.subscribe<lio_sam::context_info>("context/loop_info", 100, &mapOptimization::contextLoopInfoHandler, this, ros::TransportHints().tcpNoDelay());
-        subFullCloud = nh.subscribe<sensor_msgs::PointCloud2>("feature/full_cloud", 2, &mapOptimization::fullCloudHandler, this);
-
+        pubHistoryKeyFrames = nh.advertise<sensor_msgs::PointCloud2>("/history_cloud", 2);
+        pubIcpKeyFrames = nh.advertise<sensor_msgs::PointCloud2>("/corrected_cloud", 2);
+        pubRecentKeyFrames = nh.advertise<sensor_msgs::PointCloud2>("/recent_cloud", 2);
+        pubRegisteredCloud = nh.advertise<sensor_msgs::PointCloud2>("/registered_cloud", 2);
 
         downSizeFilterCorner.setLeafSize(0.2, 0.2, 0.2);
         downSizeFilterSurf.setLeafSize(0.4, 0.4, 0.4);
         downSizeFilterOutlier.setLeafSize(0.4, 0.4, 0.4);
 
         downSizeFilterHistoryKeyFrames.setLeafSize(0.4, 0.4, 0.4); // for histor key frames of loop closure
-        downSizeFilterSurroundingKeyPoses.setLeafSize(1.0, 1.0, 1.0); // for surrounding ken poses of scan-to-map optimization
+        downSizeFilterSurroundingKeyPoses.setLeafSize(1.0, 1.0, 1.0); // for surrounding key poses of scan-to-map optimization
 
         downSizeFilterGlobalMapKeyPoses.setLeafSize(1.0, 1.0, 1.0); // for global map visualization
         downSizeFilterGlobalMapKeyFrames.setLeafSize(0.4, 0.4, 0.4); // for global map visualization
 
-        odomAftMapped.header.frame_id = robot_id + "/camera_init";
-        odomAftMapped.child_frame_id = robot_id + "/aft_mapped";
+        odomAftMapped.header.frame_id = "/camera_init";
+        odomAftMapped.child_frame_id = "/aft_mapped";
 
-        aftMappedTrans.frame_id_ = robot_id + "/camera_init";
-        aftMappedTrans.child_frame_id_ = robot_id + "/aft_mapped";
+        aftMappedTrans.frame_id_ = "/camera_init";
+        aftMappedTrans.child_frame_id_ = "/aft_mapped";
 
         allocateMemory();
     }
@@ -323,9 +303,6 @@ public:
         laserCloudOutlierLastDS.reset(new pcl::PointCloud<PointType>()); // downsampled corner feature set from odoOptimization
         laserCloudSurfTotalLast.reset(new pcl::PointCloud<PointType>()); // surf feature set from odoOptimization
         laserCloudSurfTotalLastDS.reset(new pcl::PointCloud<PointType>()); // downsampled surf featuer set from odoOptimization
-
-        laserCloudLastFeature.reset(new pcl::PointCloud<PointType>());
-        fullCloud.reset(new pcl::PointCloud<PointType>());
 
         laserCloudOri.reset(new pcl::PointCloud<PointType>());
         coeffSel.reset(new pcl::PointCloud<PointType>());
@@ -390,6 +367,8 @@ public:
         Vector6 << 1e-6, 1e-6, 1e-6, 1e-8, 1e-8, 1e-6;
         priorNoise = noiseModel::Diagonal::Variances(Vector6);
         odometryNoise = noiseModel::Diagonal::Variances(Vector6);
+//        priorNoise = noiseModel::Diagonal::Sigmas(Vector6);
+//        odometryNoise = noiseModel::Diagonal::Sigmas(Vector6);
 
         matA0 = cv::Mat (5, 3, CV_32F, cv::Scalar::all(0));
         matB0 = cv::Mat (5, 1, CV_32F, cv::Scalar::all(-1));
@@ -414,55 +393,6 @@ public:
 
         latestFrameID = 0;
     }
-
-    void fullCloudHandler(const sensor_msgs::PointCloud2ConstPtr& laserCloudMsg){
-        fullCloud->clear();
-        pcl::fromROSMsg(*laserCloudMsg, *fullCloud);
-        newFullCloud = true;
-    }
-
-    void contextLoopInfoHandler(const lio_sam::context_infoConstPtr& msgIn){
-
-        std::cout<< "msgIn->robotID: "<< msgIn->robotID << " robot_id "<< robot_id <<std::endl;
-        if(msgIn->robotID != robot_id)
-            return;
-
-        int indexFrom = msgIn->numRing;
-        int indexTo = msgIn->numSector;
-
-        std::cout<<"receiving id "<< indexFrom << " & " <<indexTo <<std::endl;
-        std::cout<<"relative: "<<msgIn->poseRoll<<" " <<msgIn->posePitch<<" "<<msgIn->poseYaw
-            <<" "<<msgIn->poseX<<" " <<msgIn->poseY<<" "<<msgIn->poseZ<<std::endl;
-
-        gtsam::Pose3 poseBetween = gtsam::Pose3( gtsam::Rot3::RzRyRx(msgIn->poseRoll, msgIn->posePitch, msgIn->poseYaw),
-                                         gtsam::Point3(msgIn->poseX, msgIn->poseY, msgIn->poseZ) );
-        int cauchy_k = 5;//5
-        float noiseScore = msgIn->poseIntensity;
-//        gtsam::Vector Vector6(6);
-//        Vector6 << noiseScore, noiseScore, noiseScore, noiseScore, noiseScore, noiseScore;
-//        auto noiseBetween = gtsam::noiseModel::Diagonal::Variances(Vector6);
-        auto noiseBetween = noiseModel::Robust::Create(noiseModel::mEstimator::Cauchy::Create(cauchy_k),
-                noiseModel::Diagonal::Sigmas((Vector(6) << noiseScore, noiseScore, noiseScore, noiseScore, noiseScore, noiseScore)
-                                                     .finished()));
-        double start = ros::Time::now().toSec();
-        gtSAMgraph.add(BetweenFactor<Pose3>(indexFrom, indexTo, poseBetween, noiseBetween));
-
-        isam->update(gtSAMgraph);
-        isam->update();
-        isamCurrentEstimate = isam->calculateEstimate();
-
-//        double end = ros::Time::now().toSec();;
-//        double seconds = end - start;
-//        std::ofstream outfile("/home/yewei/catkin_ws/processingtimelocal.csv", std::ios::app);
-//        outfile << robot_id << "," << seconds << std::endl;
-
-        aLoopIsClosed = true;
-
-        correctPoses();
-
-        publishKeyPosesAndFrames();
-    }
-
 
     void transformAssociateToMap()
     {
@@ -786,7 +716,7 @@ public:
             sensor_msgs::PointCloud2 cloudMsgTemp;
             pcl::toROSMsg(*cloudKeyPoses3D, cloudMsgTemp);
             cloudMsgTemp.header.stamp = ros::Time().fromSec(timeLaserOdometry);
-            cloudMsgTemp.header.frame_id = robot_id + "/camera_init";
+            cloudMsgTemp.header.frame_id = "/camera_init";
             pubKeyPoses.publish(cloudMsgTemp);
         }
 
@@ -794,7 +724,7 @@ public:
             sensor_msgs::PointCloud2 cloudMsgTemp;
             pcl::toROSMsg(*laserCloudSurfFromMapDS, cloudMsgTemp);
             cloudMsgTemp.header.stamp = ros::Time().fromSec(timeLaserOdometry);
-            cloudMsgTemp.header.frame_id = robot_id + "/camera_init";
+            cloudMsgTemp.header.frame_id = "/camera_init";
             pubRecentKeyFrames.publish(cloudMsgTemp);
         }
 
@@ -807,7 +737,7 @@ public:
             sensor_msgs::PointCloud2 cloudMsgTemp;
             pcl::toROSMsg(*cloudOut, cloudMsgTemp);
             cloudMsgTemp.header.stamp = ros::Time().fromSec(timeLaserOdometry);
-            cloudMsgTemp.header.frame_id = robot_id + "/camera_init";
+            cloudMsgTemp.header.frame_id = "/camera_init";
             pubRegisteredCloud.publish(cloudMsgTemp);
         } 
     }
@@ -881,13 +811,83 @@ public:
         sensor_msgs::PointCloud2 cloudMsgTemp;
         pcl::toROSMsg(*globalMapKeyFramesDS, cloudMsgTemp);
         cloudMsgTemp.header.stamp = ros::Time().fromSec(timeLaserOdometry);
-        cloudMsgTemp.header.frame_id = robot_id + "/camera_init";
+        cloudMsgTemp.header.frame_id = "/camera_init";
         pubLaserCloudSurround.publish(cloudMsgTemp);  
 
         globalMapKeyPoses->clear();
         globalMapKeyPosesDS->clear();
         globalMapKeyFrames->clear();
         // globalMapKeyFramesDS->clear();     
+    }
+
+    void add_DCMixture_edge(int key_s, vector<int> key_t, vector<Pose3> odom_arr,
+                            gtsam::noiseModel::Diagonal::shared_ptr meas_noise, int discrete_id, int DC_TYPE = 1){
+        switch(DC_TYPE){
+            case 0: {
+                gtsam::BetweenFactor<Pose3> bw(key_s, key_t[0], odom_arr[0],
+                                               meas_noise);
+                dcSAMgraph.push_nonlinear(bw);
+                dcsam->update(dcSAMgraph, initialEstimateNonlinear);
+                dcSAMgraph.clear();
+                initialEstimateNonlinear.clear();
+
+                break;
+            }
+            case 1: {
+                if(key_t.size()!= odom_arr.size())
+                    cerr<<"Invalid key_t & odom_arr size!"<<endl;
+                int tol = 10e-7;
+                int m_num = odom_arr.size();
+                gtsam::KeyVector keys;
+                keys.push_back(key_s);
+                for (auto ite : key_t)
+                    keys.push_back(ite);
+
+                //add a discrete element
+                const size_t cardinality = m_num + 1;
+                gtsam::DiscreteKey dk(D(discrete_id), cardinality);
+                std::vector<double> prior_dk_class;
+                for (int i = 0; i<m_num; i++){
+                    prior_dk_class.push_back((1 - tol)/double(m_num));
+                }
+                prior_dk_class.push_back(tol);
+                DiscretePriorFactor dki(dk, prior_dk_class);
+
+                dcSAMgraph.push_discrete(dki);
+
+                initialEstimateDiscrete[dk.first] = discrete_id%m_num;
+                std::vector<gtsam::BetweenFactor<Pose3>> factorComponents;
+
+                for (int i = 0; i<m_num; i++){
+                    gtsam::BetweenFactor<Pose3> fbw(key_s, key_t[i], odom_arr[i], meas_noise);
+                    factorComponents.push_back(fbw);
+                }
+
+                double sigmaNullHypo = 8.0;
+                noiseModel::Diagonal::shared_ptr pose_noiseNullHypo =
+                        noiseModel::Diagonal::Variances((gtsam::Vector(6) <<
+                                                                          sigmaNullHypo, sigmaNullHypo, sigmaNullHypo, sigmaNullHypo, sigmaNullHypo, sigmaNullHypo).finished());
+
+                gtsam::BetweenFactor<Pose3> fbw_null(key_s, key_t[0], odom_arr[0], pose_noiseNullHypo);
+                factorComponents.push_back(fbw_null);
+
+                DCMixtureFactor<gtsam::BetweenFactor<Pose3>> dcMixture(keys, {dk}, factorComponents);
+
+                dcSAMgraph.push_dc(dcMixture);
+                ros::Time time0 = ros::Time::now();
+                dcsam->update(dcSAMgraph, initialEstimateNonlinear, initialEstimateDiscrete);
+                ros::Time time1 = ros::Time::now();
+                cout<<"dc loop optimization time: "<< time1.toSec() -time0.toSec() << "s." <<endl;
+
+                dcSAMgraph.clear();
+                initialEstimateNonlinear.clear();
+                initialEstimateDiscrete.clear();
+                break;
+            }
+            default:
+                cerr<<"Invalid DC_TYPE!"<<endl;
+
+        }
     }
 
     void loopClosureThread(){
@@ -955,7 +955,7 @@ public:
             sensor_msgs::PointCloud2 cloudMsgTemp;
             pcl::toROSMsg(*nearHistorySurfKeyFrameCloudDS, cloudMsgTemp);
             cloudMsgTemp.header.stamp = ros::Time().fromSec(timeLaserOdometry);
-            cloudMsgTemp.header.frame_id = robot_id + "/camera_init";
+            cloudMsgTemp.header.frame_id = "/camera_init";
             pubHistoryKeyFrames.publish(cloudMsgTemp);
         }
 
@@ -1001,7 +1001,7 @@ public:
             sensor_msgs::PointCloud2 cloudMsgTemp;
             pcl::toROSMsg(*closed_cloud, cloudMsgTemp);
             cloudMsgTemp.header.stamp = ros::Time().fromSec(timeLaserOdometry);
-            cloudMsgTemp.header.frame_id = robot_id + "/camera_init";
+            cloudMsgTemp.header.frame_id = "/camera_init";
             pubIcpKeyFrames.publish(cloudMsgTemp);
         }   
         /*
@@ -1023,41 +1023,21 @@ public:
         float noiseScore = icp.getFitnessScore();
         Vector6 << noiseScore, noiseScore, noiseScore, noiseScore, noiseScore, noiseScore;
         constraintNoise = noiseModel::Diagonal::Variances(Vector6);
+//        constraintNoise = noiseModel::Diagonal::Sigmas(Vector6);
         /* 
         	add constraints
         	*/
         std::lock_guard<std::mutex> lock(mtx);
-        gtSAMgraph.add(BetweenFactor<Pose3>(latestFrameIDLoopCloure, closestHistoryFrameID, poseFrom.between(poseTo), constraintNoise));
 
-        char c = robot_id.back() - '0' + 'a';
-        gtsam::Symbol si(c, latestFrameIDLoopCloure);
-        gtsam::Symbol sj(c, closestHistoryFrameID);
-//        graph_door.add(BetweenFactor<Pose3>(si, sj, poseFrom.between(poseTo), constraintNoise));
-
-        MatrixXd noiseMatrix = Eigen::MatrixXd::Zero(6,6);
-        for (int i = 0; i<6; i++){
-            noiseMatrix(i,i) = noiseScore;
-        }
-
-        //local loop closure but might be false positive
-        MHEdgeStruct edge_ele;
-        edge_ele.EdgeType = 4;
-        edge_ele.IDFrom = si;
-        edge_ele.IDTo.push_back(sj);
-        edge_ele.IsAmbiguity = 1;
-        edge_ele.Pose.push_back(poseFrom.between(poseTo));
-        edge_ele.NoiseMat = noiseMatrix;
-        edge_list.push_back(edge_ele);
-        write_MH_g2o("/home/yewei/catkin_ws/loop.g2o", edge_list);
-//        cout<<"Loop closed!!!!"<<endl;
-
-        isam->update(gtSAMgraph);
-        isam->update();
-        gtSAMgraph.resize(0);
-
+        //dcsam
+        add_DCMixture_edge(latestFrameIDLoopCloure, {closestHistoryFrameID}, {poseFrom.between(poseTo)},constraintNoise, loop_count);
+        loop_count ++;
+//        dcSAMgraph.push_nonlinear(BetweenFactor<Pose3>(latestFrameIDLoopCloure, closestHistoryFrameID, poseFrom.between(poseTo), constraintNoise));
+//        dcsam->update(dcSAMgraph);
+//        dcsam->update();
+//        dcSAMgraph.clear();
 
         aLoopIsClosed = true;
-
     }
 
     Pose3 pclPointTogtsamPose3(PointTypePose thisPoint){ // camera frame to lidar frame
@@ -1181,11 +1161,6 @@ public:
     }
 
     void downsampleCurrentScan(){
-
-        laserCloudLastFeature->clear();
-        *laserCloudLastFeature+=*laserCloudCornerLast;
-        *laserCloudCornerLast+=*laserCloudSurfLast;
-        *laserCloudSurfLast+=*laserCloudOutlierLast;
 
         laserCloudCornerLastDS->clear();
         downSizeFilterCorner.setInputCloud(laserCloudCornerLast);
@@ -1494,21 +1469,10 @@ public:
          * update grsam graph
          */
         if (cloudKeyPoses3D->points.empty()){
-            gtSAMgraph.add(PriorFactor<Pose3>(0, Pose3(Rot3::RzRyRx(transformTobeMapped[2], transformTobeMapped[0], transformTobeMapped[1]),
+            dcSAMgraph.push_nonlinear(PriorFactor<Pose3>(0, Pose3(Rot3::RzRyRx(transformTobeMapped[2], transformTobeMapped[0], transformTobeMapped[1]),
                                                        		 Point3(transformTobeMapped[5], transformTobeMapped[3], transformTobeMapped[4])), priorNoise));
-            char c = robot_id.back() - '0' + 'a';
-            gtsam::Symbol s0(c, 0);
-
-//            graph_door.add(PriorFactor<Pose3>(s0, Pose3(Rot3::RzRyRx(transformTobeMapped[2], transformTobeMapped[0], transformTobeMapped[1]),
-//                                                       Point3(transformTobeMapped[5], transformTobeMapped[3], transformTobeMapped[4])), priorNoise));
-
-            initialEstimate.insert(0, Pose3(Rot3::RzRyRx(transformTobeMapped[2], transformTobeMapped[0], transformTobeMapped[1]),
+            initialEstimateNonlinear.insert(0, Pose3(Rot3::RzRyRx(transformTobeMapped[2], transformTobeMapped[0], transformTobeMapped[1]),
                                                   Point3(transformTobeMapped[5], transformTobeMapped[3], transformTobeMapped[4])));
-
-//            initial_door.insert(s0, Pose3(Rot3::RzRyRx(transformTobeMapped[2], transformTobeMapped[0], transformTobeMapped[1]),
-//                                         Point3(transformTobeMapped[5], transformTobeMapped[3], transformTobeMapped[4])));
-
-
             for (int i = 0; i < 6; ++i)
             	transformLast[i] = transformTobeMapped[i];
         }
@@ -1517,44 +1481,19 @@ public:
                                                 Point3(transformLast[5], transformLast[3], transformLast[4]));
             gtsam::Pose3 poseTo   = Pose3(Rot3::RzRyRx(transformAftMapped[2], transformAftMapped[0], transformAftMapped[1]),
                                                 Point3(transformAftMapped[5], transformAftMapped[3], transformAftMapped[4]));
-            gtSAMgraph.add(BetweenFactor<Pose3>(cloudKeyPoses3D->points.size()-1, cloudKeyPoses3D->points.size(), poseFrom.between(poseTo), odometryNoise));
-
-            char c = robot_id.back() - '0' + 'a';
-            gtsam::Symbol si(c, cloudKeyPoses3D->points.size());
-            gtsam::Symbol sj(c, cloudKeyPoses3D->points.size()-1);
-
-//            graph_door.add(BetweenFactor<Pose3>(sj, si, poseFrom.between(poseTo), odometryNoise));
-
-            initialEstimate.insert(cloudKeyPoses3D->points.size(), Pose3(Rot3::RzRyRx(transformAftMapped[2], transformAftMapped[0], transformAftMapped[1]),
+            dcSAMgraph.push_nonlinear(BetweenFactor<Pose3>(cloudKeyPoses3D->points.size()-1, cloudKeyPoses3D->points.size(), poseFrom.between(poseTo), odometryNoise));
+            initialEstimateNonlinear.insert(cloudKeyPoses3D->points.size(), Pose3(Rot3::RzRyRx(transformAftMapped[2], transformAftMapped[0], transformAftMapped[1]),
                                                                      		   Point3(transformAftMapped[5], transformAftMapped[3], transformAftMapped[4])));
-
-//            initial_door.insert(si, Pose3(Rot3::RzRyRx(transformAftMapped[2], transformAftMapped[0], transformAftMapped[1]),
-//                                                                      Point3(transformAftMapped[5], transformAftMapped[3], transformAftMapped[4])));
-
-            MatrixXd noiseMatrix = Eigen::MatrixXd::Zero(6,6);
-            for (int i = 0; i<6; i++){
-                noiseMatrix(i,i) = 1e-6;
-            }
-
-            MHEdgeStruct edge_ele;
-            edge_ele.EdgeType = 1;
-            edge_ele.IDFrom = sj;
-            edge_ele.IDTo.push_back(si);
-            edge_ele.IsAmbiguity = 0;
-            edge_ele.Pose.push_back(poseFrom.between(poseTo));
-            edge_ele.NoiseMat = noiseMatrix;
-            edge_list.push_back(edge_ele);
-//            write_MH_g2o("/home/yewei/catkin_ws/odom.g2o", edge_list);
-
         }
         /**
          * update iSAM
          */
-        isam->update(gtSAMgraph, initialEstimate);
-        isam->update();
-        
-        gtSAMgraph.resize(0);
-        initialEstimate.clear();
+
+        dcsam->update(dcSAMgraph, initialEstimateNonlinear);
+//        dcsam->update();
+
+        dcSAMgraph.clear();
+        initialEstimateNonlinear.clear();
 
         /**
          * save key poses
@@ -1563,8 +1502,11 @@ public:
         PointTypePose thisPose6D;
         Pose3 latestEstimate;
 
-        isamCurrentEstimate = isam->calculateEstimate();
-        latestEstimate = isamCurrentEstimate.at<Pose3>(isamCurrentEstimate.size()-1);
+        dcsamCurrentEstimate = dcsam->calculateEstimate();
+        odomCurrentEstimate = dcsamCurrentEstimate.continuous;
+        latestEstimate = odomCurrentEstimate.at<Pose3>(odomCurrentEstimate.size()-1);
+        if (aLoopIsClosed)
+            dcsamCurrentEstimate.discrete.print();
 
         thisPose3D.x = latestEstimate.translation().y();
         thisPose3D.y = latestEstimate.translation().z();
@@ -1602,88 +1544,35 @@ public:
         pcl::PointCloud<PointType>::Ptr thisSurfKeyFrame(new pcl::PointCloud<PointType>());
         pcl::PointCloud<PointType>::Ptr thisOutlierKeyFrame(new pcl::PointCloud<PointType>());
 
-        pcl::PointCloud<PointType>::Ptr thisFullCloud(new pcl::PointCloud<PointType>());
-
         pcl::copyPointCloud(*laserCloudCornerLastDS,  *thisCornerKeyFrame);
         pcl::copyPointCloud(*laserCloudSurfLastDS,    *thisSurfKeyFrame);
         pcl::copyPointCloud(*laserCloudOutlierLastDS, *thisOutlierKeyFrame);
 
-        pcl::copyPointCloud(*fullCloud, *thisFullCloud);
-
         cornerCloudKeyFrames.push_back(thisCornerKeyFrame);
         surfCloudKeyFrames.push_back(thisSurfKeyFrame);
         outlierCloudKeyFrames.push_back(thisOutlierKeyFrame);
-
-        cloudPoseInfo.header.stamp = ros::Time().fromSec(timeLaserOdometry);
-        cloudPoseInfo.initialGuessX = latestEstimate.translation().x();
-        cloudPoseInfo.initialGuessY = latestEstimate.translation().y();
-        cloudPoseInfo.initialGuessZ = latestEstimate.translation().z();
-        cloudPoseInfo.initialGuessRoll  = latestEstimate.rotation().roll();
-        cloudPoseInfo.initialGuessPitch = latestEstimate.rotation().pitch();
-        cloudPoseInfo.initialGuessYaw   = latestEstimate.rotation().yaw();
-        cloudPoseInfo.imuAvailable = thisPose6D.intensity;
-
-        cloudPoseInfo.cloud_corner  = publishCloud(&pubCloudInCloudPoseInfo, laserCloudLastFeature,
-                                                  cloudPoseInfo.header.stamp, robot_id + "/camera");
-//        cloudPoseInfo.cloud_surface = publishCloud(&pubCloudInCloudPoseInfo, laserCloudSurfLastDS,
-//                                                  cloudPoseInfo.header.stamp, robot_id + "/camera");
-
-        cloudPoseInfo.cloud_deskewed = publishCloud(&pubCloudInCloudPoseInfo, thisFullCloud,
-                                                  cloudPoseInfo.header.stamp, robot_id + "/base_link");
-
-        pubCloudPoseInfo.publish(cloudPoseInfo);
-    }
-
-    sensor_msgs::PointCloud2 publishCloud(ros::Publisher *thisPub, pcl::PointCloud<PointType>::Ptr thisCloud, ros::Time thisStamp, std::string thisFrame)
-    {
-//        pcl::PointCloud<PointType>::Ptr tmpCloud(new pcl::PointCloud<PointType>());
-
-//        int cloud_size = thisCloud->points.size();
-//
-//        PointType * point_this;
-//        PointType point_tmp;
-//
-//        tmpCloud->resize(cloud_size);
-//
-//        for (int i = 0; i<cloud_size; i++){
-//            point_this = &thisCloud->points[i];
-//            point_tmp.x = point_this->z;
-//            point_tmp.y = point_this->x;
-//            point_tmp.z = point_this->y;
-//            tmpCloud->points[i] = point_tmp;
-//        }
-
-        sensor_msgs::PointCloud2 tempCloud;
-        pcl::toROSMsg(*thisCloud, tempCloud);
-        tempCloud.header.stamp = thisStamp;
-        tempCloud.header.frame_id = thisFrame;
-        if (thisPub->getNumSubscribers() != 0)
-            thisPub->publish(tempCloud);
-        return tempCloud;
     }
 
     void correctPoses(){
-//        gtsam::writeG2o(graph_door, initial_door, "/home/yewei/catkin_ws/odometry" + string(1, robot_id.back()) + ".g2o" );
-//        gtsam::writeG2o(graph_door,isamCurrentEstimate, "/home/yewei/catkin_ws/currentest" + string(1, robot_id.back()) + ".g2o" );
-
-        if (aLoopIsClosed == true){
+    	if (aLoopIsClosed == true){
             recentCornerCloudKeyFrames. clear();
             recentSurfCloudKeyFrames.   clear();
             recentOutlierCloudKeyFrames.clear();
             // update key poses
-                int numPoses = isamCurrentEstimate.size();
+                int numPoses = odomCurrentEstimate.size();
             for (int i = 0; i < numPoses; ++i){
-                cloudKeyPoses3D->points[i].x = isamCurrentEstimate.at<Pose3>(i).translation().y();
-                cloudKeyPoses3D->points[i].y = isamCurrentEstimate.at<Pose3>(i).translation().z();
-                cloudKeyPoses3D->points[i].z = isamCurrentEstimate.at<Pose3>(i).translation().x();
+            cloudKeyPoses3D->points[i].x = odomCurrentEstimate.at<Pose3>(i).translation().y();
+            cloudKeyPoses3D->points[i].y = odomCurrentEstimate.at<Pose3>(i).translation().z();
+            cloudKeyPoses3D->points[i].z = odomCurrentEstimate.at<Pose3>(i).translation().x();
 
-                cloudKeyPoses6D->points[i].x = cloudKeyPoses3D->points[i].x;
-                cloudKeyPoses6D->points[i].y = cloudKeyPoses3D->points[i].y;
-                cloudKeyPoses6D->points[i].z = cloudKeyPoses3D->points[i].z;
-                cloudKeyPoses6D->points[i].roll  = isamCurrentEstimate.at<Pose3>(i).rotation().pitch();
-                cloudKeyPoses6D->points[i].pitch = isamCurrentEstimate.at<Pose3>(i).rotation().yaw();
-                cloudKeyPoses6D->points[i].yaw   = isamCurrentEstimate.at<Pose3>(i).rotation().roll();
+            cloudKeyPoses6D->points[i].x = cloudKeyPoses3D->points[i].x;
+            cloudKeyPoses6D->points[i].y = cloudKeyPoses3D->points[i].y;
+            cloudKeyPoses6D->points[i].z = cloudKeyPoses3D->points[i].z;
+            cloudKeyPoses6D->points[i].roll  = odomCurrentEstimate.at<Pose3>(i).rotation().pitch();
+            cloudKeyPoses6D->points[i].pitch = odomCurrentEstimate.at<Pose3>(i).rotation().yaw();
+            cloudKeyPoses6D->points[i].yaw   = odomCurrentEstimate.at<Pose3>(i).rotation().roll();
             }
+
             aLoopIsClosed = false;
         }
     }
@@ -1700,12 +1589,10 @@ public:
         if (newLaserCloudCornerLast  && std::abs(timeLaserCloudCornerLast  - timeLaserOdometry) < 0.005 &&
             newLaserCloudSurfLast    && std::abs(timeLaserCloudSurfLast    - timeLaserOdometry) < 0.005 &&
             newLaserCloudOutlierLast && std::abs(timeLaserCloudOutlierLast - timeLaserOdometry) < 0.005 &&
-            newLaserOdometry && newFullCloud)
+            newLaserOdometry)
         {
 
             newLaserCloudCornerLast = false; newLaserCloudSurfLast = false; newLaserCloudOutlierLast = false; newLaserOdometry = false;
-
-            newFullCloud = false;
 
             std::lock_guard<std::mutex> lock(mtx);
 
