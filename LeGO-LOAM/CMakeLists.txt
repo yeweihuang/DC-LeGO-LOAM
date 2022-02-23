@@ -24,7 +24,7 @@ find_package(GTSAM REQUIRED QUIET)
 find_package(PCL REQUIRED QUIET)
 find_package(OpenCV REQUIRED QUIET)
 
-#add DCSAM
+#add DCSAM 
 #set your own path to dcsam
 set(DCSAM_PATH "/home/yewei/dcsam/dcsam")
 

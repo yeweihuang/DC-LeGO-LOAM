@@ -129,11 +129,14 @@ extern const float nearestFeatureSearchSqDist = 25;
 extern const float surroundingKeyframeSearchRadius = 50.0; // key frame that is within n meters from current pose will be considerd for scan-to-map optimization (when loop closure disabled)
 extern const int   surroundingKeyframeSearchNum = 50; // submap size (when loop closure enabled)
 // history key frames (history submap for loop closure)
-extern const float historyKeyframeSearchRadius = 7.0; // key frame that is within n meters from current pose will be considerd for loop closure
+extern const float historyKeyframeSearchRadius = 20.0; // key frame that is within n meters from current pose will be considerd for loop closure
 extern const int   historyKeyframeSearchNum = 25; // 2n+1 number of hostory key frames will be fused into a submap for loop closure
-extern const float historyKeyframeFitnessScore = 0.3; // the smaller the better alignment
+extern const float historyKeyframeFitnessScore = 1.5; // the smaller the better alignment
 
-extern const float globalMapVisualizationSearchRadius = 100.0; // key frames with in n meters will be visualized
+extern const int   maxLoopCandidateNumber = 5; // number of loop candidate for dcsam
+extern const int   minLoopCandidateTimeDistance = 50; // minium number of keyframes between two dcsam candidates
+
+extern const float globalMapVisualizationSearchRadius = 1500.0; // key frames with in n meters will be visualized
 
 
 struct smoothness_t{ 
